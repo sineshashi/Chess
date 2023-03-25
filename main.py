@@ -46,6 +46,14 @@ class Piece(abc.ABC):
     def move(self, board: "Board", move: "Move") -> None:
         ...
 
+    @abc.abstractmethod
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        '''
+        Get all possible moves by the piece.
+        Moves which can result the own king in check are also included.
+        '''
+        ...
+
     def clone(self) -> "Piece":
         '''Creates a deep copy of instance.'''
         return deepcopy(self)
@@ -58,7 +66,7 @@ class Pawn(Piece):
         self.color = color
         self.has_moved = False
 
-    def _last_move_can_result_in_en_passant(self, board: "Board") -> bool:
+    def _is_en_passant(self, board: "Board") -> bool:
         last_move = board.get_last_move()
         if last_move is None or last_move.start.piece.piece_type != PieceTypes.pawn:
             return False
@@ -73,7 +81,7 @@ class Pawn(Piece):
             elif move.end.piece is None:
                 en_passant_pos = board.positions[move.start.row][move.end.column]
                 if en_passant_pos is not None and en_passant_pos.piece.piece_type == PieceTypes.pawn:
-                    if self._last_move_can_result_in_en_passant() \
+                    if self._is_en_passant() \
                             and self.color != en_passant_pos.piece.color:
                         return True
         return False
@@ -138,18 +146,21 @@ class Pawn(Piece):
         if not can_promote and promote is not None:
             raise ValueError("Promote must be None.")
 
-        move.clone_positions()
         board.positions[move.start.row][move.start.column].update(None)
         if not can_promote:
             board.positions[move.end.row][move.end.column].update(
                 move.start.piece)
+            if self._is_en_passant(board):
+                board.positions[move.start.row][move.end.column].update(None, True)
         else:
             board.positions[move.end.row][move.end.column].update(promote)
         self.has_moved = True
+        move.clone_positions()
 
     def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
         '''
-        Get all possible moves.
+        Get all possible moves by the piece.
+        Moves which can result the own king in check are also included.
         '''
         poss_moves = []
         i = 1 if self.color is Color.white else -1
@@ -169,7 +180,7 @@ class Pawn(Piece):
                         board.positions[row][col]
                     ))
                     continue
-        if self._last_move_can_result_in_en_passant(board):
+        if self._is_en_passant(board):
             last_move = board.get_last_move()
             poss_moves.append(Move(
                 position,
@@ -184,12 +195,50 @@ class Pawn(Piece):
         return poss_moves
 
 
-class Rook(Piece):
-    ...
-
-
 class Knight(Piece):
-    ...
+    piece_type = PieceTypes.knight
+
+    def __init__(self, color: Color) -> None:
+        self.color = color
+
+    def is_valid_move(self, board: "Board", move: "Move") -> bool:
+        if (abs(move.start.row-move.end.row)==2 and abs(move.start.column-move.end.column)==1) or \
+            (abs(move.start.row-move.end.row)==1 and abs(move.start.column-move.end.column)==2):
+                if not move.can_result_in_check_of_own_king(board):
+                    return True
+        return False
+    
+    def move(self, board: "Board", move: "Move") -> None:
+        if not self.is_valid_move(board, move):
+            raise ValueError("Invalid Move.")
+        board.positions[move.start.row][move.end.column].update(None)
+        board.positions[move.end.row][move.end.column].update(move.start.piece)
+        move.clone_positions()
+
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        possible_moves = []
+        row, col = position.row, position.column
+        for i in [2, -2]:
+            for j in [1, -1]:
+                try:
+                    move = Move(
+                        position,
+                        board.positions[row+i][col+j]
+                    )
+                    if move.is_possibly_valid():
+                        possible_moves.append(move)
+                except IndexError:
+                    continue
+                try:
+                    move = Move(
+                        position,
+                        board.positions[row+j][col+i]
+                    )
+                    if move.is_possibly_valid():
+                        possible_moves.append(move)
+                except IndexError:
+                    continue
+        return possible_moves
 
 
 class Bishop(Piece):
@@ -197,6 +246,10 @@ class Bishop(Piece):
 
 
 class Queen(Piece):
+    ...
+
+
+class Rook(Piece):
     ...
 
 
@@ -241,7 +294,7 @@ class Position:
         self.piece = piece
         self.color = color
 
-    def update(self, piece: Optional[Piece] = None):
+    def update(self, piece: Optional[Piece] = None, en_passant_capture: bool = False):
         # @TODO capture and simple put piece logic.
         ...
 
