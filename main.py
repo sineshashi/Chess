@@ -42,9 +42,12 @@ class Piece(abc.ABC):
     def is_valid_move(self, board: "Board", move: "Move") -> bool:
         ...
 
-    @abc.abstractmethod
     def move(self, board: "Board", move: "Move") -> None:
-        ...
+        if not self.is_valid_move(board, move):
+            raise ValueError("Invalid Move.")
+        board.positions[move.start.row][move.end.column].update(None)
+        board.positions[move.end.row][move.end.column].update(move.start.piece)
+        move.clone_positions()
 
     @abc.abstractmethod
     def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
@@ -151,7 +154,8 @@ class Pawn(Piece):
             board.positions[move.end.row][move.end.column].update(
                 move.start.piece)
             if self._is_en_passant(board):
-                board.positions[move.start.row][move.end.column].update(None, True)
+                board.positions[move.start.row][move.end.column].update(
+                    None, True)
         else:
             board.positions[move.end.row][move.end.column].update(promote)
         self.has_moved = True
@@ -198,22 +202,12 @@ class Pawn(Piece):
 class Knight(Piece):
     piece_type = PieceTypes.knight
 
-    def __init__(self, color: Color) -> None:
-        self.color = color
-
     def is_valid_move(self, board: "Board", move: "Move") -> bool:
-        if (abs(move.start.row-move.end.row)==2 and abs(move.start.column-move.end.column)==1) or \
-            (abs(move.start.row-move.end.row)==1 and abs(move.start.column-move.end.column)==2):
-                if not move.can_result_in_check_of_own_king(board):
-                    return True
+        if (abs(move.start.row-move.end.row) == 2 and abs(move.start.column-move.end.column) == 1) or \
+                (abs(move.start.row-move.end.row) == 1 and abs(move.start.column-move.end.column) == 2):
+            if not move.can_result_in_check_of_own_king(board):
+                return True
         return False
-    
-    def move(self, board: "Board", move: "Move") -> None:
-        if not self.is_valid_move(board, move):
-            raise ValueError("Invalid Move.")
-        board.positions[move.start.row][move.end.column].update(None)
-        board.positions[move.end.row][move.end.column].update(move.start.piece)
-        move.clone_positions()
 
     def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
         possible_moves = []
@@ -242,19 +236,79 @@ class Knight(Piece):
 
 
 class Bishop(Piece):
-    ...
+    piece_type = PieceTypes.bishop
+
+    def is_valid_move(self, board: "Board", move: "Move") -> bool:
+        if abs(move.end.row-move.start.row) == abs(move.end.column-move.start.column) != 0:
+            i, j = 1 if move.end.row > move.start.row else - \
+                1, 1 if move.end.column > move.start.column else -1
+            return board.check_if_move_valid(move, i, j)
+        return False
+
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        moves = []
+        for i in [1, -1]:
+            for j in [1, -1]:
+                for move in board.get_all_possible_moves_in_given_dir(position, i, j):
+                    if move.is_possibly_valid():
+                        moves.append(move)
+        return move
 
 
 class Queen(Piece):
-    ...
+    piece_type = PieceTypes.queen
+
+    def is_valid_move(self, board: "Board", move: "Move") -> bool:
+        if abs(move.end.row-move.start.row) == abs(move.end.column-move.start.column) != 0:
+            i, j = 1 if move.end.row > move.start.row else - \
+                1, 1 if move.end.column > move.start.column else -1
+            return board.check_if_move_valid(move, i, j)
+        elif abs(move.end.row-move.start.row) != 0 and abs(move.end.column-move.start.column) != 0:
+            return False
+        elif abs(move.end.row-move.start.row) == 0 and abs(move.end.column-move.start.column) == 0:
+            rowdel, coldel = move.end.row - move.start.row, move.end.column - move.start.column
+            if rowdel == 0:
+                i = 0
+            if rowdel < 0:
+                i = -1
+            if rowdel > 0:
+                i = 1
+            if coldel == 0:
+                j = 0
+            if coldel < 0:
+                j = -1
+            if coldel > 0:
+                j = 1
+            return board.check_if_move_valid(move, i, j)
+        return False
+
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        moves = []
+        for i in [1, -1, 0]:
+            for j in [1, -1, 0]:
+                if i == 0 and j == 0:
+                    continue
+                for move in board.get_all_possible_moves_in_given_dir(position, i, j):
+                    if move.is_possibly_valid():
+                        moves.append(move)
+        return move
 
 
 class Rook(Piece):
-    ...
+    piece_type = PieceTypes.rook
+
+    def __init__(self, color: Color) -> None:
+        super().__init__(color)
+        self.has_moved = False
 
 
 class King(Piece):
-    ...
+    piece_type = PieceTypes.king
+
+    def __init__(self, color: Color) -> None:
+        super().__init__(color)
+        self.has_moved = False
+        self.has_been_checked = False
 
 
 class PieceFactory:
@@ -364,14 +418,74 @@ class Board:
                 cnt_color = revert_color(cnt_color)
             cnt_color = revert_color(cnt_color)
 
+        self.king_positions = {
+            Color.white: self.positions[0][4], Color.black: self.positions[7][4]}
+
+    def are_positions_under_attack(self, positions: List["Position"], color: "Color") -> bool:
+        '''Check if any of given positions under attack by pieces of given color.'''
+        coords = [(pos.row, pos.col) for pos in positions]
+        for i in range(8):
+            for j in range(8):
+                cntpos = self.positions[i][j]
+                if cntpos.piece is not None and cntpos.piece.color != color:
+                    if cntpos.piece.piece_type != PieceTypes.pawn:
+                        for move in cntpos.piece.get_all_possible_moves(self, cntpos):
+                            if (move.end.row, move.end.column) in coords:
+                                return True
+                    else:
+                        if color == Color.white:
+                            if (cntpos.row+1, cntpos.column+1) in coords or (cntpos.row+1, cntpos.column-1) in coords:
+                                return True
+                        else:
+                            if (cntpos.row-1, cntpos.column+1) in coords or (cntpos.row-1, cntpos.column-1) in coords:
+                                return True
+        return False
+
     def is_king_in_check(self, color: Color) -> bool:
-        ...
+        '''Checks if given color king is in check.'''
+        king_pos = self.king_positions[color]
+        return self.are_positions_under_attack(positions=[king_pos], color = revert_color(color))
 
     def clone(self) -> "Board":
         return deepcopy(self)
 
     def get_last_move(self) -> "Union[Move, None]":
         ...
+
+    def get_all_possible_moves_in_given_dir(self, position: "Position", i: int, j: int) -> List["Move"]:
+        if i < -1 or i > 1 or j < -1 or j > 1:
+            raise ValueError("Invalid Value of i and j.")
+        cntrow = position.row
+        cntcol = position.column
+        cntrow += i
+        cntcol += j
+        moves = []
+        while True:
+            if 0 <= cntrow <= 7 and 0 <= cntcol <= 7:
+                cntpos = self.positions[cntrow][cntcol]
+                moves.append(Move(position, cntpos))
+                if cntpos.piece is not None:
+                    break
+            else:
+                break
+        return moves
+
+    def check_if_move_valid(self, move: "Move", i: int, j: int) -> bool:
+        if i < -1 or i > 1 or j < -1 or j > 1:
+            raise ValueError("Invalid Value of i and j.")
+        i, j = 1 if move.end.row > move.start.row else - \
+            1, 1 if move.end.column > move.start.column else -1
+        row, col = move.start.row, move.start.column
+        row += i
+        col += j
+        while row != move.end.row and col != move.end.column:
+            if self.positions[row][col].piece is not None:
+                return False
+            row += i
+            col += j
+        if not move.can_result_in_check_of_own_king(self):
+            return True
+        return False
 
 
 class Move:
