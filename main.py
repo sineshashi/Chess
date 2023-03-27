@@ -301,6 +301,78 @@ class Rook(Piece):
         super().__init__(color)
         self.has_moved = False
 
+    def is_valid_move(self, board: "Board", move: "Move") -> bool:
+        if not move.is_castle:
+            if abs(move.end.row-move.start.row) == 0 and abs(move.end.column-move.start.column) == 0:
+                rowdel, coldel = move.end.row - move.start.row, move.end.column - move.start.column
+                if rowdel == 0:
+                    i = 0
+                if rowdel < 0:
+                    i = -1
+                if rowdel > 0:
+                    i = 1
+                if coldel == 0:
+                    j = 0
+                if coldel < 0:
+                    j = -1
+                if coldel > 0:
+                    j = 1
+                return board.check_if_move_valid(move, i, j)
+            return False
+        else:
+            if move.start.piece.can_castle() and move.start1.piece.can_castle():
+                return board.check_if_move_valid(move, i, j)
+            return False
+
+    def can_castle(self, board: "Board", position: "Position") -> bool:
+        if not self.has_moved:
+            king_position = board.get_king_position(self.color)
+            king: King = king_position.piece
+            if not king.can_castle(board, king_position):
+                return False
+            i = 1 if position.column > king_position.column else -1
+            col = king_position.column
+            positions_should_not_be_under_attack = []
+            for _ in range(3):
+                positions_should_not_be_under_attack.append(board.positions[position.row][col])
+                col += i
+            if board.are_positions_under_attack(positions_should_not_be_under_attack):
+                return False
+            return True
+        return False
+
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        moves = []
+        for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1)]:
+            for move in board.get_all_possible_moves_in_given_dir(position, i, j):
+                if move.is_possibly_valid(): moves.append(move)
+        if self.can_castle(board, position):
+            king_pos = board.get_king_position(self.color)
+            i = 1 if position.column > king_pos.column else -1
+            moves.append(
+                Move(
+                    position,
+                    board.positions[king_pos.row][king_pos.column+i],
+                    True, 
+                    board.positions[king_pos.row][king_pos.column+2*i]
+                )
+            )
+        return moves
+    
+    def move(self, board: "Board", move: "Move") -> None:
+        if not move.is_castle:
+            super().move(board, move)
+            self.has_moved = True
+        else:
+            if not self.is_valid_move(board, move):
+                raise ValueError("Invalid Move.")
+            board.positions[move.start.row][move.end.column].update(None)
+            board.positions[move.end.row][move.end.column].update(move.start.piece)
+            board.positions[move.start1.row][move.end1.column].update(None)
+            board.positions[move.end1.row][move.end1.column].update(move.start1.piece)
+            move.clone_positions()
+            move.start1.piece.has_moved = True
+            move.start.piece.has_moved = True
 
 class King(Piece):
     piece_type = PieceTypes.king
@@ -309,6 +381,9 @@ class King(Piece):
         super().__init__(color)
         self.has_moved = False
         self.has_been_checked = False
+
+    def can_castle(self, board: "Board", position: "Position") -> bool:
+        return not self.has_moved and not self.has_been_checked
 
 
 class PieceFactory:
@@ -451,6 +526,9 @@ class Board:
 
     def get_last_move(self) -> "Union[Move, None]":
         ...
+
+    def get_king_position(self, color:"Color") -> Position:
+        return self.king_positions[color]
 
     def get_all_possible_moves_in_given_dir(self, position: "Position", i: int, j: int) -> List["Move"]:
         if i < -1 or i > 1 or j < -1 or j > 1:
