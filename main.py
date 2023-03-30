@@ -29,8 +29,6 @@ class Player:
     def __init__(self, name: str, color: Color) -> None:
         self.name = name
         self.color = color
-        self.remaining_pieces = []
-
 
 class Piece(abc.ABC):
     piece_type: PieceTypes = None
@@ -45,8 +43,8 @@ class Piece(abc.ABC):
     def move(self, board: "Board", move: "Move") -> None:
         if not self.is_valid_move(board, move):
             raise ValueError("Invalid Move.")
-        board.positions[move.start.row][move.end.column].update(None)
-        board.positions[move.end.row][move.end.column].update(move.start.piece)
+        board.positions[move.start.row][move.end.column].update(board, None)
+        board.positions[move.end.row][move.end.column].update(board, move.start.piece)
         move.clone_positions()
 
     @abc.abstractmethod
@@ -149,15 +147,15 @@ class Pawn(Piece):
         if not can_promote and promote is not None:
             raise ValueError("Promote must be None.")
 
-        board.positions[move.start.row][move.start.column].update(None)
+        board.positions[move.start.row][move.start.column].update(board, None)
         if not can_promote:
-            board.positions[move.end.row][move.end.column].update(
+            board.positions[move.end.row][move.end.column].update(board, 
                 move.start.piece)
             if self._is_en_passant(board):
-                board.positions[move.start.row][move.end.column].update(
+                board.positions[move.start.row][move.end.column].update(board, 
                     None, True)
         else:
-            board.positions[move.end.row][move.end.column].update(promote)
+            board.positions[move.end.row][move.end.column].update(board, promote)
         self.has_moved = True
         move.clone_positions()
 
@@ -320,8 +318,8 @@ class Rook(Piece):
                 return board.check_if_move_valid(move, i, j)
             return False
         else:
-            if move.start.piece.can_castle() and move.start1.piece.can_castle():
-                return board.check_if_move_valid(move, i, j)
+            if move.start.piece.can_castle(board, move.start) and move.start1.piece.can_castle(board, move.start1):
+                return not move.can_result_in_check_of_own_king(board)
             return False
 
     def can_castle(self, board: "Board", position: "Position") -> bool:
@@ -336,6 +334,9 @@ class Rook(Piece):
             for _ in range(3):
                 positions_should_not_be_under_attack.append(board.positions[position.row][col])
                 col += i
+            for pos in positions_should_not_be_under_attack:
+                if pos.piece is not None:
+                    return False
             if board.are_positions_under_attack(positions_should_not_be_under_attack):
                 return False
             return True
@@ -354,6 +355,7 @@ class Rook(Piece):
                     position,
                     board.positions[king_pos.row][king_pos.column+i],
                     True, 
+                    king_pos,
                     board.positions[king_pos.row][king_pos.column+2*i]
                 )
             )
@@ -366,13 +368,13 @@ class Rook(Piece):
         else:
             if not self.is_valid_move(board, move):
                 raise ValueError("Invalid Move.")
-            board.positions[move.start.row][move.end.column].update(None)
-            board.positions[move.end.row][move.end.column].update(move.start.piece)
-            board.positions[move.start1.row][move.end1.column].update(None)
-            board.positions[move.end1.row][move.end1.column].update(move.start1.piece)
+            board.positions[move.start.row][move.end.column].update(board, None)
+            board.positions[move.end.row][move.end.column].update(board, move.start.piece)
+            board.positions[move.start1.row][move.end1.column].update(board, None)
+            board.positions[move.end1.row][move.end1.column].update(board, move.start1.piece)
             move.clone_positions()
-            move.start1.piece.has_moved = True
-            move.start.piece.has_moved = True
+            board.positions[move.end.row][move.end.column].piece.has_moved = True
+            board.positions[move.end1.row][move.end1.column].piece.has_moved = True
 
 class King(Piece):
     piece_type = PieceTypes.king
@@ -384,7 +386,65 @@ class King(Piece):
 
     def can_castle(self, board: "Board", position: "Position") -> bool:
         return not self.has_moved and not self.has_been_checked
+    
+    def is_valid_move(self, board: "Board", move: "Move") -> bool:
+        if not move.is_castle:
+            if abs(move.end.row-move.start.row) <= 1 and abs(move.end.column-move.start.column) <= 1:
+                return board.check_if_move_valid(move, move.end.row, move.end.column)
+            return False
+        else:
+            if move.start.piece.can_castle(board, move.start) and move.start1.piece.can_castle(board, move.start1):
+                return not move.can_result_in_check_of_own_king(board)
+            return False
+    
+    def get_all_possible_moves(self, board: "Board", position: "Position") -> List["Move"]:
+        moves = []
+        row = position.row
+        col = position.column
+        for i, j in [(1, 0), (1, 1), (1, -1), (0, 1), (0, -1), (-1, 0), (-1, -1), (-1, 1)]:
+            if 0 <= row+i <= 7 and 0 <= col+j <= 7:
+                move = Move(
+                    position,
+                    board.positions[row+i][col+j]
+                )
+                if move.is_possibly_valid():
+                    moves.append(move)
 
+        if self.can_castle:
+            initial_rook_positions = [(0, 0), (0, 7)] if self.color == Color.white else [(7, 0), (7, 7)]
+            for (x, y) in initial_rook_positions:
+                rook_pos = board.positions[x][y]
+                if rook_pos.piece is None or rook_pos.piece.piece_type != PieceTypes.rook:
+                    continue
+                if rook_pos.piece.has_moved or not rook_pos.piece.can_castle(board, rook_pos):
+                    continue
+                i = 1 if position.column < rook_pos.column else -1
+                moves.append(
+                    Move(
+                        position,
+                        board.positions[position.row][position.column+2*i],
+                        True, 
+                        rook_pos,
+                        board.positions[position.row][position.column+i]
+                    )
+                )
+                if move.is_possibly_valid(): moves.append(move)
+        return moves
+    
+    def move(self, board: "Board", move: "Move") -> None:
+        if not move.is_castle:
+            super().move(board, move)
+            self.has_moved = True
+        else:
+            if not self.is_valid_move(board, move):
+                raise ValueError("Invalid Move.")
+            board.positions[move.start.row][move.end.column].update(board, None)
+            board.positions[move.end.row][move.end.column].update(board, move.start.piece)
+            board.positions[move.start1.row][move.end1.column].update(board, None)
+            board.positions[move.end1.row][move.end1.column].update(board, move.start1.piece)
+            move.clone_positions()
+            board.positions[move.end.row][move.end.column].piece.has_moved = True
+            board.positions[move.end1.row][move.end1.column].piece.has_moved = True
 
 class PieceFactory:
     @classmethod
@@ -423,9 +483,10 @@ class Position:
         self.piece = piece
         self.color = color
 
-    def update(self, piece: Optional[Piece] = None, en_passant_capture: bool = False):
-        # @TODO capture and simple put piece logic.
-        ...
+    def update(self, board: "Board", piece: Optional[Piece] = None, en_passant_capture: bool = False) -> None:
+        self.piece = piece
+        if self.piece.piece_type == PieceTypes.king:
+            board.king_positions[self.piece.color] = self
 
     def clone(self) -> "Position":
         '''Clone the position.'''
@@ -433,7 +494,7 @@ class Position:
 
 
 class Board:
-    def __init__(self):
+    def __init__(self, white_player: "Player", black_player: "Player"):
         self.positions: List[List[Optional[Position]]] = [
             [None for _ in range(8)] for _ in range(8)]
 
@@ -495,6 +556,9 @@ class Board:
 
         self.king_positions = {
             Color.white: self.positions[0][4], Color.black: self.positions[7][4]}
+        self.white = white_player
+        self.black = black_player
+        self._last_move = None
 
     def are_positions_under_attack(self, positions: List["Position"], color: "Color") -> bool:
         '''Check if any of given positions under attack by pieces of given color.'''
@@ -525,7 +589,7 @@ class Board:
         return deepcopy(self)
 
     def get_last_move(self) -> "Union[Move, None]":
-        ...
+        return self._last_move
 
     def get_king_position(self, color:"Color") -> Position:
         return self.king_positions[color]
@@ -588,7 +652,15 @@ class Move:
         self.end1 = end1
 
     def is_possibly_valid(self) -> bool:
-        ...
+        if self.start.piece is None or (
+            self.end.piece is not None and self.end.piece.color==self.start.piece.color
+        ):
+            return False
+        if self.is_castle and self.start1.piece is None or self.end1.piece is not None or \
+            {self.start.piece.piece_type, self.start1.piece.piece_type} != {PieceTypes.rook, PieceTypes.king}\
+                or self.start.piece.color != self.start1.piece.color:
+            return False
+        return True
 
     def clone_positions(self) -> None:
         '''Clones the pieces saved in the positions and saves them in the self.'''
@@ -599,7 +671,7 @@ class Move:
 
     def can_result_in_check_of_own_king(self, board: "Board") -> bool:
         temp_board = board.clone()
-        '''Write logic if the move can result in check of the own king.'''
+        return temp_board.is_king_in_check(color=self.start.piece.color)
 
 
 class MoveObserver:
@@ -609,16 +681,39 @@ class MoveObserver:
     def add(self, move: Move) -> None:
         self._moves.append(move)
 
-    def undo(self) -> None:
-        self._moves.pop()
-
-    def get_latest_move(self) -> Union[Move, None]:
-        if len(self._moves) == 0:
-            return None
-        else:
-            return self._moves[-1]
-
 
 class Chess:
-    def __init__(self, player1: Player, player2: Player) -> None:
-        ...
+    def __init__(self, player1_name: str, player2_name: str) -> None:
+        self.white = Player(player1_name, Color.white)
+        self.black = Player(player2_name, Color.black)
+        self.turn = Color.white
+        self.board = Board(self.white, self.black)
+        self.move_observer = MoveObserver()
+
+    def _change_turn(self):
+        self.turn = revert_color(self.turn)
+
+    def _verify_coord(self, coords: List[int]) -> None:
+        for c in coords:
+            if c<0 or c>7:
+                raise ValueError("Wrong Coordinates.")
+        
+    def _get_pos(self, x: int, y: int) -> Position:
+        return self.board.positions[x][y]
+
+    def get_all_possible_moves(self, x: int, y: int) -> List[Move]:
+        '''x and y considering left corner of white as 0, 0'''
+        self._verify_coord([x, y])
+        position = self._get_pos(x, y)
+        if position.piece is None or position.piece.color != self.turn:
+            raise ValueError("Only the player with his turn can access this function.")
+        return position.piece.get_all_possible_moves(self.board, position)
+    
+    def move(self, move: Move) -> None:
+        if move.start.piece is None or move.start.piece.color != self.turn or not move.is_possibly_valid:
+            raise ValueError("Only player with current turn can move.")
+        move.start.piece.move(self.board, move)
+        self._change_turn()
+        if self.board.is_king_in_check(self.turn):
+            self.board.king_positions[self.turn].has_been_checked = True
+        self.move_observer.add(move)
